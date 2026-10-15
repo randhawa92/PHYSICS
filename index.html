@@ -1,0 +1,475 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fourier Nautilus</title>
+<link rel="stylesheet" href="styles/index.css">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;min-height:100%;background:#030303;color:#eee}
+body{font-family:Georgia,"Times New Roman",serif;overflow-x:hidden}
+#stage{position:relative;width:100%;height:100svh;min-height:580px;overflow:hidden;background:#030303}
+#art{display:block;width:100%;height:100%}
+.brand{position:absolute;right:7%;top:8%;font:9px Arial,sans-serif;letter-spacing:1px;color:#aaa;text-align:right}
+.brand b{display:block;font-size:10px;line-height:1.8}
+.brand span{font-size:22px;color:#ddd}
+.equations{position:absolute;left:5%;top:28%;width:56%;color:#b5b8ad;font-size:clamp(11px,2.5vw,18px);font-style:italic;line-height:2.8;pointer-events:none}
+.eq2{color:#c39a70}
+.metrics{position:absolute;right:7%;top:66%;text-align:center;pointer-events:none}
+.count{font-size:clamp(29px,6vw,48px);white-space:nowrap}
+.count span{color:#d99a7e}
+.error{font-size:clamp(12px,2.8vw,19px);white-space:nowrap;margin-top:5px}
+.controls{position:absolute;left:50%;bottom:15px;transform:translateX(-50%);width:min(420px,90%);padding:12px 16px;background:rgba(18,18,18,.88);border:1px solid #333;border-radius:14px;font:12px Arial,sans-serif;display:flex;align-items:center;gap:10px;opacity:.18;transition:opacity .2s}
+.controls:hover,.controls:focus-within{opacity:1}
+.controls input{min-width:0;flex:1;accent-color:#d99a7e}
+.controls button{background:#242424;color:#eee;border:1px solid #444;padding:8px 11px;border-radius:8px}
+@media(max-width:500px){
+ .equations{top:27%;left:5%;width:64%;font-size:11px;line-height:2.5}
+ .brand{top:15%;right:8%}
+ .metrics{top:66%;right:6%}
+ .controls{bottom:10px}
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="art"></canvas>
+
+  <div class="brand">
+    <b>PHILOSOPHY<br>OF PHYSICS</b>
+    <span>Φ</span>
+  </div>
+
+  <div class="equations">
+    <div>x<sub>N</sub>(t) = ∑ (a<sub>k</sub> cos kt + b<sub>k</sub> sin kt)</div>
+    <div class="eq2">y<sub>N</sub>(t) = ∑ (c<sub>k</sub> cos kt + d<sub>k</sub> sin kt)</div>
+  </div>
+
+  <div class="metrics">
+    <div class="count">N = <span id="count">64</span></div>
+    <div class="error">approximation error = <span id="error">calculating</span></div>
+  </div>
+
+  <div class="controls">
+    <button id="toggle">Pause</button>
+    <input id="harmonics" type="range" min="1" max="512" value="64">
+    <span id="sliderValue">64</span>
+    <button id="reset">↻</button>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+const canvas = document.getElementById("art");
+const ctx = canvas.getContext("2d");
+const slider = document.getElementById("harmonics");
+const countLabel = document.getElementById("count");
+const errorLabel = document.getElementById("error");
+const sliderValue = document.getElementById("sliderValue");
+const toggle = document.getElementById("toggle");
+
+const TAU = Math.PI * 2;
+const SIZE = 1024;
+let W=0,H=0,DPR=1;
+let time=0, playing=true, last=0;
+let harmonics=64, path=[], coeff=[], sorted=[];
+let maxError=0, figureHeight=1;
+let cachedTrace=null;
+
+// Complex arithmetic helpers.
+const complex=(re,im)=>({re,im});
+const add=(a,b)=>complex(a.re+b.re,a.im+b.im);
+const mul=(a,b)=>complex(a.re*b.re-a.im*b.im,a.re*b.im+a.im*b.re);
+
+function fft(a,inverse=false){
+  const n=a.length;
+
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1) j^=bit;
+    j^=bit;
+    if(i<j)[a[i],a[j]]=[a[j],a[i]];
+  }
+
+  for(let len=2;len<=n;len<<=1){
+    const angle=TAU/len*(inverse?1:-1);
+    const root=complex(Math.cos(angle),Math.sin(angle));
+
+    for(let i=0;i<n;i+=len){
+      let w=complex(1,0);
+      for(let j=0;j<len/2;j++){
+        const u=a[i+j];
+        const v=mul(a[i+j+len/2],w);
+        a[i+j]=add(u,v);
+        a[i+j+len/2]=complex(u.re-v.re,u.im-v.im);
+        w=mul(w,root);
+      }
+    }
+  }
+
+  if(inverse){
+    for(let i=0;i<n;i++){
+      a[i].re/=n;
+      a[i].im/=n;
+    }
+  }
+  return a;
+}
+
+// Create a closed, continuous pen journey: spiral plus
+// curved chamber partitions, each wall retraced on return.
+function makeShell(){
+  const p=[];
+  const turns=2.4;
+  const a=.018, growth=.49;
+
+  function spiral(t){
+    const r=a*Math.exp(growth*t);
+    return {x:r*Math.cos(t),y:r*Math.sin(t)};
+  }
+
+  const end=turns*TAU;
+  for(let i=0;i<=1250;i++)p.push(spiral(end*i/1250));
+
+  // Follow each curved partition and retrace it.
+  for(let j=7;j>=0;j--){
+    const t1=end*(.12+.84*j/7);
+    const t0=Math.max(.08,t1-TAU*(.18+.014*j));
+    const p1=spiral(t1),p0=spiral(t0);
+    const mid=spiral((t0+t1)/2);
+    const bulge=.075+.012*j;
+    const control={
+      x:mid.x-Math.sin((t0+t1)/2)*bulge,
+      y:mid.y+Math.cos((t0+t1)/2)*bulge
+    };
+
+    const wall=[];
+    for(let i=0;i<=45;i++){
+      const u=i/45,v=1-u;
+      wall.push({
+        x:v*v*p1.x+2*v*u*control.x+u*u*p0.x,
+        y:v*v*p1.y+2*v*u*control.y+u*u*p0.y
+      });
+    }
+    p.push(...wall);
+    for(let i=wall.length-2;i>=0;i--)p.push(wall[i]);
+  }
+
+  // Close the journey smoothly.
+  p.push(p[0]);
+  return p;
+}
+
+function resample(points,n){
+  const lengths=[0];
+  for(let i=1;i<points.length;i++){
+    const dx=points[i].x-points[i-1].x;
+    const dy=points[i].y-points[i-1].y;
+    lengths.push(lengths[i-1]+Math.hypot(dx,dy));
+  }
+
+  const total=lengths[lengths.length-1];
+  const out=[];
+  let j=1;
+
+  for(let i=0;i<n;i++){
+    const target=total*i/n;
+    while(j<lengths.length-1&&lengths[j]<target)j++;
+
+    const a=points[j-1],b=points[j];
+    const d=lengths[j]-lengths[j-1];
+    const u=d?(target-lengths[j-1])/d:0;
+
+    out.push({
+      x:a.x+(b.x-a.x)*u,
+      y:a.y+(b.y-a.y)*u
+    });
+  }
+  return out;
+}
+
+function normalize(points){
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for(const p of points){
+    minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);
+    minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);
+  }
+
+  const scale=1/Math.max(maxX-minX,maxY-minY);
+  figureHeight=(maxY-minY)*scale;
+
+  return points.map(p=>({
+    x:(p.x-(minX+maxX)/2)*scale,
+    y:(p.y-(minY+maxY)/2)*scale
+  }));
+}
+
+function buildFourier(){
+  const points=normalize(resample(makeShell(),SIZE));
+  path=points;
+
+  const data=points.map(p=>complex(p.x,p.y));
+  fft(data);
+  coeff=data.map((c,k)=>({
+    k:k<=SIZE/2?k:k-SIZE,
+    re:c.re/SIZE,
+    im:c.im/SIZE,
+    amp:Math.hypot(c.re,c.im)/SIZE,
+    phase:Math.atan2(c.im,c.re)/1
+  }));
+
+  // Largest vectors first; retain signed frequencies.
+  sorted=coeff.slice().sort((a,b)=>b.amp-a.amp);
+  updateError();
+}
+
+function evaluate(t,n){
+  let x=0,y=0;
+  for(let i=0;i<n;i++){
+    const c=sorted[i];
+    const angle=c.k*t+c.phase;
+    x+=c.amp*Math.cos(angle);
+    y+=c.amp*Math.sin(angle);
+  }
+  return {x,y};
+}
+
+function updateError(){
+  maxError=0;
+  for(let i=0;i<SIZE;i++){
+    const p=evaluate(TAU*i/SIZE,harmonics);
+    const q=path[i];
+    maxError=Math.max(maxError,Math.hypot(p.x-q.x,p.y-q.y));
+  }
+  const percent=maxError/Math.max(figureHeight,1e-9)*100;
+  errorLabel.textContent=percent.toFixed(2)+"%";
+}
+
+function resize(){
+  const r=canvas.getBoundingClientRect();
+  W=r.width;H=r.height;
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.round(W*DPR);
+  canvas.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  render();
+}
+
+function mapPoint(p,cx,cy,s){
+  return {x:cx+p.x*s,y:cy-p.y*s};
+}
+
+function drawCurve(points,cx,cy,s,color,width,close=false){
+  if(!points.length)return;
+  ctx.beginPath();
+  points.forEach((p,i)=>{
+    const q=mapPoint(p,cx,cy,s);
+    if(i===0)ctx.moveTo(q.x,q.y);
+    else ctx.lineTo(q.x,q.y);
+  });
+  if(close)ctx.closePath();
+  ctx.strokeStyle=color;
+  ctx.lineWidth=width;
+  ctx.stroke();
+}
+
+function render(){
+  if(!W||!H||!path.length)return;
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle="#030303";
+  ctx.fillRect(0,0,W,H);
+
+  // Layout inspired by the reference image.
+  const mobile=W<600;
+  const cx=mobile?W*.72:W*.70;
+  const cy=H*.50;
+  const scale=Math.min(W*(mobile?.47:.39),H*.35);
+
+  // Subtle coordinate axes and dashed projections.
+  ctx.save();
+  ctx.setLineDash([9,9]);
+  ctx.lineWidth=1;
+  ctx.strokeStyle="rgba(190,190,190,.55)";
+  ctx.beginPath();
+  ctx.moveTo(cx,cy-scale*.4);
+  ctx.lineTo(cx,cy+scale*.06);
+  ctx.moveTo(cx-scale*.7,cy+scale*.1);
+  ctx.lineTo(cx-scale*.18,cy+scale*.1);
+  ctx.stroke();
+  ctx.restore();
+
+  // Shell body silhouette, filled with muted copper.
+  const shell=path.map(p=>mapPoint(p,cx,cy,scale));
+  ctx.save();
+  ctx.beginPath();
+  shell.forEach((p,i)=>{
+    if(i===0)ctx.moveTo(p.x,p.y);
+    else ctx.lineTo(p.x,p.y);
+  });
+  ctx.closePath();
+  ctx.fillStyle="rgba(142,105,72,.17)";
+  ctx.fill();
+  ctx.strokeStyle="rgba(193,145,112,.66)";
+  ctx.lineWidth=1.1;
+  ctx.stroke();
+  ctx.restore();
+
+  // Internal spiral trace.
+  drawCurve(path,cx,cy,scale,"rgba(219,165,130,.85)",1.15);
+
+  // Rotating epicycle chain.
+  const epiCx=W*.25;
+  const epiCy=H*.55;
+  const epiScale=Math.min(W*.23,H*.20);
+
+  let x=0,y=0;
+  const used=sorted.slice(0,harmonics);
+  const endpoints=[];
+
+  for(let i=0;i<used.length;i++){
+    const c=used[i];
+    const angle=c.k*time+c.phase;
+    const nx=x+c.amp*Math.cos(angle);
+    const ny=y+c.amp*Math.sin(angle);
+
+    endpoints.push({x:nx,y:ny,amp:c.amp});
+    x=nx;y=ny;
+  }
+
+  ctx.save();
+  ctx.lineWidth=.8;
+
+  // Faint circles for every vector.
+  for(let i=0;i<used.length;i++){
+    const c=used[i];
+    if(c.amp*epiScale<1)continue;
+    const prev=i?endpoints[i-1]:{x:0,y:0};
+    const center=mapPoint(prev,epiCx,epiCy,epiScale);
+
+    ctx.beginPath();
+    ctx.arc(center.x,center.y,c.amp*epiScale,0,TAU);
+    ctx.strokeStyle=`rgba(195,195,195,${Math.max(.035,.24-i*.003)})`;
+    ctx.stroke();
+  }
+
+  // Connecting vectors.
+  x=0;y=0;
+  for(let i=0;i<used.length;i++){
+    const c=used[i];
+    const angle=c.k*time+c.phase;
+    const nx=x+c.amp*Math.cos(angle);
+    const ny=y+c.amp*Math.sin(angle);
+    const p=mapPoint({x,y},epiCx,epiCy,epiScale);
+    const q=mapPoint({x:nx,y:ny},epiCx,epiCy,epiScale);
+
+    ctx.beginPath();
+    ctx.moveTo(p.x,p.y);
+    ctx.lineTo(q.x,q.y);
+    ctx.strokeStyle=i===0?"#e8dba5":"rgba(225,225,225,.52)";
+    ctx.stroke();
+
+    x=nx;y=ny;
+  }
+
+  const tip=mapPoint({x,y},epiCx,epiCy,epiScale);
+  ctx.beginPath();
+  ctx.arc(tip.x,tip.y,2.4,0,TAU);
+  ctx.fillStyle="#e9e1b7";
+  ctx.fill();
+  ctx.restore();
+
+  // Second epicycle system, for the other coordinate.
+  const topX=W*.73;
+  const topY=H*.31;
+  let vx=0,vy=0;
+
+  ctx.save();
+  for(let i=0;i<Math.min(harmonics,60);i++){
+    const c=used[i];
+    const angle=c.k*time+c.phase;
+    const nx=vx+c.amp*Math.cos(angle);
+    const ny=vy+c.amp*Math.sin(angle);
+    const center=mapPoint({x:vx,y:vy},topX,topY,epiScale*.7);
+
+    if(c.amp*epiScale*.7>1){
+      ctx.beginPath();
+      ctx.arc(center.x,center.y,c.amp*epiScale*.7,0,TAU);
+      ctx.strokeStyle="rgba(200,210,205,.25)";
+      ctx.lineWidth=.8;
+      ctx.stroke();
+    }
+
+    const p=mapPoint({x:vx,y:vy},topX,topY,epiScale*.7);
+    const q=mapPoint({x:nx,y:ny},topX,topY,epiScale*.7);
+    ctx.beginPath();
+    ctx.moveTo(p.x,p.y);
+    ctx.lineTo(q.x,q.y);
+    ctx.strokeStyle="rgba(220,225,220,.65)";
+    ctx.stroke();
+
+    vx=nx;vy=ny;
+  }
+  ctx.restore();
+
+  // Reference moving point on the shell.
+  const pen=evaluate(time,harmonics);
+  const penPos=mapPoint(pen,cx,cy,scale);
+  ctx.beginPath();
+  ctx.arc(penPos.x,penPos.y,2.4,0,TAU);
+  ctx.fillStyle="#efb18e";
+  ctx.fill();
+
+  // Show coordinate guide lines from epicycle endpoints to shell.
+  ctx.save();
+  ctx.setLineDash([8,8]);
+  ctx.strokeStyle="rgba(200,200,200,.55)";
+  ctx.lineWidth=.9;
+  ctx.beginPath();
+  ctx.moveTo(epiCx+epiScale*x,epiCy-epiScale*y);
+  ctx.lineTo(penPos.x,penPos.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function animate(now){
+  if(!last)last=now;
+  const dt=Math.min(40,now-last);
+  last=now;
+
+  if(playing)time=(time+dt*.0009)%TAU;
+  render();
+  requestAnimationFrame(animate);
+}
+
+slider.addEventListener("input",()=>{
+  harmonics=Number(slider.value);
+  countLabel.textContent=harmonics;
+  sliderValue.textContent=harmonics;
+  updateError();
+  render();
+});
+
+toggle.addEventListener("click",()=>{
+  playing=!playing;
+  toggle.textContent=playing?"Pause":"Play";
+});
+
+document.getElementById("reset").addEventListener("click",()=>{
+  time=0;
+  render();
+});
+
+window.addEventListener("resize",resize);
+
+buildFourier();
+resize();
+requestAnimationFrame(animate);
+})();
+</script>
+</body>
+</html>
